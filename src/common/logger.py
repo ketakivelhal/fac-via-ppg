@@ -36,11 +36,22 @@ from tensorboardX import SummaryWriter
 from common.plotting_utils import plot_alignment_to_numpy, \
     plot_spectrogram_to_numpy
 from common.plotting_utils import plot_gate_outputs_to_numpy
+import logging
+from pathlib import Path
+import time
 
 
 class Tacotron2Logger(SummaryWriter):
-    def __init__(self, logdir):
-        super(Tacotron2Logger, self).__init__(logdir)
+    def __init__(self, logdir: Path):
+        super(Tacotron2Logger, self).__init__()
+        final_log_file = Path(logdir).joinpath('log')
+        head = '%(asctime)-15s %(message)s'
+        logging.basicConfig(filename=str(final_log_file),
+                            format=head)
+        self.logger = logging.getLogger()
+        self.logger.setLevel(logging.INFO)
+        console = logging.StreamHandler()
+        logging.getLogger('').addHandler(console)
 
     def log_training(self, reduced_loss, grad_norm, learning_rate, duration,
                      iteration):

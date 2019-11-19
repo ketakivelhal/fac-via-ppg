@@ -45,7 +45,9 @@ def create_hparams(**kwargs):
         # Experiment Parameters        #
         ################################
         "epochs": 1000,
-        "iters_per_checkpoint": 200,
+        "display_freq": 50,
+        "epochs_per_checkpoint": 10,
+        # "iters_per_checkpoint": 200,
         "seed": 16807,
         "dynamic_loss_scaling": True,
         "fp16_run": False,
@@ -54,7 +56,7 @@ def create_hparams(**kwargs):
         "dist_url": "tcp://localhost:54321",
         "cudnn_enabled": True,
         "cudnn_benchmark": False,
-        "output_directory": None,  # Directory to save checkpoints.
+        "output_directory": '/home/charles/AutoSpeech/speaker/fac-via-ppg/output',  # Directory to save checkpoints.
         # Directory to save tensorboard logs. Just keep it like this.
         "log_directory": 'log',
         "checkpoint_path": '',  # Path to a checkpoint file.
@@ -66,6 +68,14 @@ def create_hparams(**kwargs):
         ################################
         # Data Parameters             #
         ################################
+        "feature_dir": '/data/AutoSpeech/vc/VCTK',
+        # "ppg_dir": '/data/AutoSpeech/vc/ppg/VCTK',
+        "d_vec_path": '/data/AutoSpeech/speaker/embedding/VCTK_speaker_wise',
+        "speaker_avg": True,
+        "train_partition": 'train',
+        "val_partition": 'val',
+
+
         # Passed as a txt file, see data/filelists/training-set.txt for an
         # example.
         "training_files": '',
@@ -90,19 +100,20 @@ def create_hparams(**kwargs):
         ################################
         # Audio Parameters             #
         ################################
-        "max_wav_value": 32768.0,
-        "sampling_rate": 16000,
-        "n_acoustic_feat_dims": 80,
-        "filter_length": 1024,
-        "hop_length": 160,
-        "win_length": 1024,
-        "mel_fmin": 0.0,
-        "mel_fmax": 8000.0,
+        # "max_wav_value": 32768.0,
+        # "sampling_rate": 16000,
+        # "n_acoustic_feat_dims": 80,
+        # "filter_length": 1024,
+        # "hop_length": 160,
+        # "win_length": 1024,
+        # "mel_fmin": 0.0,
+        # "mel_fmax": 8000.0,
 
         ################################
         # Model Parameters             #
         ################################
         "n_symbols": 5816,
+        "n_acoustic_feat_dims": 80,
         "symbols_embedding_dim": 600,
 
         # Encoder parameters
@@ -141,7 +152,7 @@ def create_hparams(**kwargs):
         "learning_rate": 1e-5,
         "weight_decay": 1e-6,
         "grad_clip_thresh": 1.0,
-        "batch_size": 6,
+        "batch_size": 24,
         "mask_padding": True,  # set model's padded outputs to padded values
         "mel_weight": 1,
         "gate_weight": 0.005
@@ -210,7 +221,7 @@ def create_hparams_stage(**kwargs):
         'n_acoustic_feat_dims': 80,
         'n_gpus': 1,
         'n_symbols': 5816,
-        'output_directory': '',
+        'output_directory': '/home/charles/AutoSpeech/speaker/fac-via-ppg/log',
         'p_attention_dropout': 0.1,
         'p_decoder_dropout': 0.1,
         'postnet_embedding_dim': 512,

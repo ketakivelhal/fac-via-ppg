@@ -60,7 +60,7 @@ dependencies:
   - pthread-stubs=0.4=h14c3975_1001
   - pycparser=2.19=py37_1
   - pyparsing=2.4.2=py_0
-  - pyqt=5.9.2=py37hcca6a23_3
+  - pyqt>=5.9.2
   - python-dateutil=2.8.0=py_0
   - pytz=2019.2=py_0
   - qt=5.9.7=h52cfd70_2
@@ -96,9 +96,9 @@ dependencies:
   - scipy=1.1.0=py37he2b7bc3_2
   - pykaldi=0.1.0=py37h82fe3e7_1
   - cuda80=1.0=h205658b_0
-  - pytorch=1.0.0=py3.7_cuda8.0.61_cudnn7.1.2_1
+  #- pytorch=1.0.0=py3.7_cuda8.0.61_cudnn7.1.2_1
   - pip:
     - textgrid==1.4
-    - torch==1.0.0
+  #  - torch==1.0.0
 prefix: /home/guanlong/anaconda2/envs/ppg-speech
 

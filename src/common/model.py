@@ -232,6 +232,7 @@ class Encoder(nn.Module):
         outputs, _ = nn.utils.rnn.pad_packed_sequence(
             outputs, batch_first=True)
 
+
         return outputs
 
     def inference(self, x):
@@ -547,16 +548,17 @@ class Tacotron2(nn.Module):
 
     def parse_batch(self, batch):
         ppg_padded, input_lengths, acoustic_padded, gate_padded,\
-            output_lengths = batch
+            output_lengths, dvec = batch
         ppg_padded = to_gpu(ppg_padded).float()
         input_lengths = to_gpu(input_lengths).long()
         max_len = torch.max(input_lengths.data).item()
         acoustic_padded = to_gpu(acoustic_padded).float()
         gate_padded = to_gpu(gate_padded).float()
         output_lengths = to_gpu(output_lengths).long()
+        dvec = to_gpu(dvec).float()
 
         return ((ppg_padded, input_lengths, acoustic_padded, max_len,
-                 output_lengths),
+                 output_lengths, dvec),
                 (acoustic_padded, gate_padded))
 
     def parse_input(self, inputs):
@@ -579,11 +581,17 @@ class Tacotron2(nn.Module):
 
     def forward(self, inputs):
         inputs, input_lengths, targets, max_len, \
-            output_lengths = self.parse_input(inputs)
+            output_lengths, dvec = self.parse_input(inputs)
         input_lengths, output_lengths = input_lengths.data, output_lengths.data
 
         # inputs: (B, D, T)
         encoder_outputs = self.encoder(inputs, input_lengths)
+
+        # dvec
+        padded_dvec = torch.FloatTensor(encoder_outputs.size(0), encoder_outputs.size(1), dvec.size(1)).cuda()
+        padded_dvec.zero_()
+        for i in range(len(input_lengths)):
+            padded_dvec[i, :input_lengths[i], :] = dvec[i].unsqueeze(0).repeat(input_lengths[i], 1)
 
         acoustic_outputs, gate_outputs, alignments = self.decoder(
             encoder_outputs, targets, memory_lengths=input_lengths)

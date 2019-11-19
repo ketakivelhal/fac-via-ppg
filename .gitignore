@@ -115,3 +115,7 @@ test/.coverage
 
 # Compiled protocol buffer files
 *_pb2.py
+
+log/**
+output/**
+src/script/runs/**

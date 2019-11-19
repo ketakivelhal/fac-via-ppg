@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from common.data_utils import get_ppg
-from common.hparams import create_hparams_stage
+from config.hparams import create_hparams_stage
 from common.layers import TacotronSTFT
 from common.utils import waveglow_audio, get_inference, load_waveglow_model
 from scipy.io import wavfile

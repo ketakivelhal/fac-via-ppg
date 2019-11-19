@@ -36,6 +36,7 @@ import random
 import numpy as np
 import torch
 import torch.utils.data
+from common.audio_processing import dynamic_range_compression, dynamic_range_decompression
 from common.utils import load_filepaths
 from common.utterance import Utterance
 from common import layers
@@ -43,6 +44,7 @@ from ppg import DependenciesPPG
 from scipy.io import wavfile
 from common import feat
 from common import ppg
+from pathlib import Path
 
 
 # First order, dx(t) = 0.5(x(t + 1) - x(t - 1))
@@ -278,6 +280,70 @@ class PPGMelLoader(torch.utils.data.Dataset):
         return len(self.ppg_sequences)
 
 
+# Contains the set of utterances of a single speaker
+class Speaker:
+    def __init__(self, root: Path, partition=None):
+        self.root = root
+        self.partition = partition
+        self.name = root.name
+        self.utterances = None
+        self.utterance_cycler = None
+        if self.partition is None:
+            with self.root.joinpath("_sources.txt").open("r") as sources_file:
+                sources = [l.split(",") for l in sources_file]
+        else:
+            with self.root.joinpath("_sources_{}.txt".format(self.partition)).open("r") as sources_file:
+                sources = [l.split(",") for l in sources_file]
+        self.sources = [[self.root, frames_fname, self.name] for frames_fname, _ in sources]
+
+
+
+class MultispeakerDatasetDvec(torch.utils.data.Dataset):
+    def __init__(self, feature_dir, dvec_dir, partition=None, speaker_avg=False, augment=False):
+        self.feature_dir = Path(feature_dir)
+        self.dvec_path = Path(dvec_dir)
+        self.partition = partition
+        self.speaker_avg = speaker_avg
+        self.augment = augment
+
+        speaker_dirs = [f for f in self.feature_dir.glob("mel/*") if f.is_dir()]
+        if len(speaker_dirs) == 0:
+            raise Exception("No speakers found. Make sure you are pointing to the directory "
+                            "containing all preprocessed speaker directories.")
+        self.speakers = [Speaker(speaker_dir, self.partition) for speaker_dir in speaker_dirs]
+
+        sources = []
+        for speaker in self.speakers:
+            sources.extend(speaker.sources)
+        self.features = []
+        for source in sources:
+            item = (source[0].joinpath(source[1]), self.feature_dir.joinpath('ppg', source[2], source[1]), source[1], source[2])
+            self.features.append(item)
+        self.transform = dynamic_range_compression
+
+    def __getitem__(self, index):
+        mel_path, ppg_path, file_name, speaker_id = self.features[index]
+        mel = torch.from_numpy(np.load(mel_path))
+        mel = self.transform(mel)
+
+        ppg = torch.from_numpy(np.load(ppg_path))
+
+        # sometimes the number of frames of ppg can be less than feature by 1
+        n_frames = min(mel.size(0), ppg.size(0))
+        mel = mel[:n_frames, :]
+        ppg = ppg[:n_frames, :]
+
+        if self.speaker_avg:
+            speaker_embedding = np.load(f'{self.dvec_path}/{speaker_id}.npy')
+        else:
+            speaker_embedding = np.load(f'{self.dvec_path}/{speaker_id}/{file_name}.npy')
+        speaker_embedding = torch.from_numpy(speaker_embedding)
+        return ppg, mel, speaker_embedding
+
+    def __len__(self):
+        return len(self.features)
+
+
 def ppg_acoustics_collate(batch):
     """Zero-pad the PPG and acoustic sequences in a mini-batch.
 
@@ -304,34 +370,52 @@ def ppg_acoustics_collate(batch):
         torch.LongTensor([x[0].shape[0] for x in batch]), dim=0,
         descending=True)
     max_input_len = input_lengths[0]
+
+    cutoff_length = 600
+    if max_input_len > cutoff_length:
+        max_input_len = cutoff_length
+
     ppg_dim = batch[0][0].shape[1]
 
     ppg_padded = torch.FloatTensor(len(batch), max_input_len, ppg_dim)
     ppg_padded.zero_()
     for i in range(len(ids_sorted_decreasing)):
         curr_ppg = batch[ids_sorted_decreasing[i]][0]
-        ppg_padded[i, :curr_ppg.shape[0], :] = curr_ppg
+        ppg_len = min(max_input_len, curr_ppg.shape[0])
+        ppg_padded[i, :ppg_len, :] = curr_ppg[:ppg_len, :]
 
     # Right zero-pad acoustic features.
     feat_dim = batch[0][1].shape[1]
     max_target_len = max([x[1].shape[0] for x in batch])
+
+    if max_target_len > cutoff_length:
+        max_target_len = cutoff_length
+
     # Create acoustic padded and gate padded
     acoustic_padded = torch.FloatTensor(len(batch), max_target_len, feat_dim)
     acoustic_padded.zero_()
     gate_padded = torch.FloatTensor(len(batch), max_target_len)
     gate_padded.zero_()
     output_lengths = torch.LongTensor(len(batch))
+
+    dvec_dim = batch[0][2].shape[0]
+    dvec = torch.FloatTensor(len(batch), dvec_dim)
+
     for i in range(len(ids_sorted_decreasing)):
         curr_acoustic = batch[ids_sorted_decreasing[i]][1]
-        acoustic_padded[i, :curr_acoustic.shape[0], :] = curr_acoustic
-        gate_padded[i, curr_acoustic.shape[0] - 1:] = 1
-        output_lengths[i] = curr_acoustic.shape[0]
+        acoustic_length = min(max_target_len, curr_acoustic.shape[0])
+        acoustic_padded[i, :acoustic_length, :] = curr_acoustic[:acoustic_length, :]
+        input_lengths[i] = acoustic_length
+        gate_padded[i, acoustic_length - 1:] = 1
+        output_lengths[i] = acoustic_length
+        curr_dvec = batch[ids_sorted_decreasing[i]][2]
+        dvec[i, :] = curr_dvec
 
     ppg_padded = ppg_padded.transpose(1, 2)
     acoustic_padded = acoustic_padded.transpose(1, 2)
 
     return ppg_padded, input_lengths, acoustic_padded, gate_padded,\
-        output_lengths
+        output_lengths, dvec
 
 
 def utt_to_sequence(utt: Utterance, is_full_ppg=False, is_append_f0=False):

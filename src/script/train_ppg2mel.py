@@ -41,11 +41,12 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import DataLoader
 from common.fp16_optimizer import FP16_Optimizer
 from common.model import Tacotron2
-from common.data_utils import PPGMelLoader, ppg_acoustics_collate
+from common.data_utils import PPGMelLoader, MultispeakerDatasetDvec, ppg_acoustics_collate
 from common.loss_function import Tacotron2Loss
 from common.logger import Tacotron2Logger
-from common.hparams import create_hparams
+from config.hparams import create_hparams
 from pprint import pprint
+from common.utils import AverageMeter, ProgressMeter
 
 
 def batchnorm_to_float(module):
@@ -81,11 +82,13 @@ def init_distributed(hparams, n_gpus, rank, group_name):
 
 def prepare_dataloaders(hparams):
     # Get data, data loaders and collate function ready
-    trainset = PPGMelLoader(hparams.training_files, hparams)
+    # trainset = PPGMelLoader(hparams.training_files, hparams)
+    trainset = MultispeakerDatasetDvec(hparams.feature_dir, hparams.d_vec_path, hparams.train_partition, hparams.speaker_avg)
     hparams.load_feats_from_disk = False
     hparams.is_cache_feats = False
     hparams.feats_cache_path = ''
-    valset = PPGMelLoader(hparams.validation_files, hparams)
+    valset = MultispeakerDatasetDvec(hparams.feature_dir, hparams.d_vec_path, hparams.val_partition, hparams.speaker_avg)
+    # valset = PPGMelLoader(hparams.validation_files, hparams)
 
     collate_fn = ppg_acoustics_collate
 
@@ -159,7 +162,12 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                                 shuffle=True, batch_size=batch_size,
                                 pin_memory=False, collate_fn=collate_fn)
 
-        val_loss = 0.0
+        losses = AverageMeter('Loss', ':.4e')
+        grad_norms = AverageMeter('GradNorm', ':.4e')
+        progress = ProgressMeter(
+            len(val_loader), losses, grad_norms, prefix="Test: ",
+            logger=logger.logger)
+
         for i, batch in enumerate(val_loader):
             x, y = model.parse_batch(batch)
             y_pred = model(x)
@@ -168,13 +176,13 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
                 reduced_val_loss = reduce_tensor(loss.data, n_gpus).item()
             else:
                 reduced_val_loss = loss.item()
-            val_loss += reduced_val_loss
-        val_loss = val_loss / (i + 1)
+            losses.update(reduced_val_loss, x[0].size(0))
+
 
     model.train()
     if rank == 0:
-        print("Validation loss {}: {:9f}  ".format(iteration, val_loss))
-        logger.log_validation(val_loss, model, y, y_pred, iteration)
+        progress.print(0)
+        logger.log_validation(losses.avg, model, y, y_pred, iteration)
 
 
 def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
@@ -228,11 +236,24 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
     model.train()
     # ================ MAIN TRAINNIG LOOP! ===================
     for epoch in range(epoch_offset, hparams.epochs):
-        print("Epoch: {}".format(epoch))
+
+        batch_time = AverageMeter('Time', ':6.3f')
+        data_time = AverageMeter('Data', ':6.3f')
+        losses = AverageMeter('Loss', ':.4e')
+        grad_norms = AverageMeter('GradNorm', ':.4e')
+        progress = ProgressMeter(
+            len(train_loader), batch_time, data_time, losses, grad_norms, prefix="Epoch: [{}]".format(epoch),
+            logger=logger.logger)
+
+        end = time.time()
+
         for i, batch in enumerate(train_loader):
             start = time.perf_counter()
             for param_group in optimizer.param_groups:
                 param_group['lr'] = learning_rate
+
+            # measure data loading time
+            data_time.update(time.time() - end)
 
             model.zero_grad()
             x, y = model.parse_batch(batch)
@@ -244,6 +265,8 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
             else:
                 reduced_loss = loss.item()
 
+            losses.update(reduced_loss, x[0].size(0))
+
             if hparams.fp16_run:
                 optimizer.backward(loss)
                 grad_norm = optimizer.clip_fp32_grads(hparams.grad_clip_thresh)
@@ -252,28 +275,33 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 grad_norm = torch.nn.utils.clip_grad_norm_(
                     model.parameters(), hparams.grad_clip_thresh)
 
+            grad_norms.update(grad_norm, x[0].size(0))
+
             optimizer.step()
 
-            overflow = optimizer.overflow if hparams.fp16_run else False
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
 
-            if not overflow and not math.isnan(reduced_loss) and rank == 0:
-                duration = time.perf_counter() - start
-                print("Train loss {} {:.6f} Grad Norm {:.6f} {:.2f}s/it".format(
-                    iteration, reduced_loss, grad_norm, duration))
-                logger.log_training(
-                    reduced_loss, grad_norm, learning_rate, duration, iteration)
+            logger.log_training(
+                reduced_loss, grad_norm, learning_rate, batch_time.val,
+                iteration)
 
-            if not overflow and (iteration % hparams.iters_per_checkpoint == 0):
-                validate(model, criterion, valset, iteration,
-                         hparams.batch_size, n_gpus, collate_fn, logger,
-                         hparams.distributed_run, rank)
-                if rank == 0:
-                    checkpoint_path = os.path.join(
-                        output_directory, "checkpoint_{}".format(iteration))
-                    save_checkpoint(model, optimizer, learning_rate, iteration,
-                                    checkpoint_path)
+            if (iteration % hparams.display_freq == 0) and rank == 0:
+                progress.print(i)
+
 
             iteration += 1
+
+        if epoch % hparams.epochs_per_checkpoint == 0:
+            validate(model, criterion, valset, iteration,
+                     hparams.batch_size, n_gpus, collate_fn, logger,
+                     hparams.distributed_run, rank)
+            if rank == 0:
+                checkpoint_path = os.path.join(
+                    output_directory, "checkpoint_{}".format(iteration))
+                save_checkpoint(model, optimizer, learning_rate,
+                                iteration, checkpoint_path)
 
 
 if __name__ == '__main__':
@@ -282,8 +310,10 @@ if __name__ == '__main__':
     if not hparams.output_directory:
         raise FileExistsError('Please specify the output dir.')
     else:
-        if not os.path.exists(hparams.output_directory):
-            os.mkdir(hparams.output_directory)
+        time_str = time.strftime('%Y-%m-%d-%H-%M')
+        output_directory = os.path.join(hparams.output_directory, 'ppg2mel_{}'.format(time_str))
+        if not os.path.exists(output_directory):
+            os.makedirs(output_directory)
 
     # Record the hyper-parameters.
     hparams_snapshot_file = os.path.join(hparams.output_directory,
@@ -300,6 +330,6 @@ if __name__ == '__main__':
     print("cuDNN Enabled:", hparams.cudnn_enabled)
     print("cuDNN Benchmark:", hparams.cudnn_benchmark)
 
-    train(hparams.output_directory, hparams.log_directory,
+    train(output_directory, hparams.log_directory,
           hparams.checkpoint_path, hparams.warm_start, hparams.n_gpus,
           hparams.rank, hparams.group_name, hparams)
