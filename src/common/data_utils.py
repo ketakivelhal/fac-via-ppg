@@ -162,6 +162,84 @@ def append_ppg(feats, f0):
     return np.concatenate((feats, lf0), axis=1)
 
 
+class MeanVarianceNorm(object):
+    """Adapted from https://github.com/CSTR-Edinburgh/merlin/blob/master/src
+    /frontend/mean_variance_norm.py"""
+    def __init__(self, mean_file, std_file):
+        """Initialize a mean and variance normalizer.
+
+        Args:
+            acoustic_norm_file: If given, will load from this file.
+        """
+        self.load_mean_std_values(mean_file, std_file)
+
+    def feature_normalization(self, features):
+        """Normalize the input features to zero mean and unit variance.
+
+        Args:
+            features: A T*D numpy array. Acoustic feature vectors.
+
+        Returns:
+            norm_features: Normalized features.
+        """
+        if self.mean_vector is None:
+            raise ValueError('The mean vector is not computed.')
+        if self.std_vector is None:
+            raise ValueError('The std vector is not computed.')
+        if isinstance(features, torch.Tensor):
+            mean_vector = torch.from_numpy(self.mean_vector)
+            std_vector = torch.from_numpy(self.std_vector)
+            current_frame_number = features.size(0)
+            mean_matrix = mean_vector.repeat(current_frame_number, 1)
+            std_matrix = std_vector.repeat(current_frame_number, 1)
+            norm_features = (features - mean_matrix) / std_matrix
+        else:
+            current_frame_number = features.shape[0]
+            mean_matrix = np.tile(self.mean_vector, (current_frame_number, 1))
+            std_matrix = np.tile(self.std_vector, (current_frame_number, 1))
+            norm_features = (features - mean_matrix) / std_matrix
+        return norm_features
+
+    def feature_denormalization(self, features):
+        """Re-scale to have the original mean and variance.
+
+        Args:
+            features: A T*D numpy array. Normalized features.
+
+        Returns:
+            denorm_features: Recovered feature vectors.
+        """
+        if self.mean_vector is None:
+            raise ValueError('The mean vector is not computed.')
+        if self.std_vector is None:
+            raise ValueError('The std vector is not computed.')
+        if isinstance(features, torch.Tensor):
+            mean_vector = torch.from_numpy(self.mean_vector)
+            std_vector = torch.from_numpy(self.std_vector)
+            current_frame_number = features.size(0)
+            mean_matrix = mean_vector.repeat(current_frame_number, 1)
+            std_matrix = std_vector.repeat(current_frame_number, 1)
+            denorm_features = features * std_matrix + mean_matrix
+        else:
+            current_frame_number = features.shape[0]
+            mean_matrix = np.tile(self.mean_vector, (current_frame_number, 1))
+            std_matrix = np.tile(self.std_vector, (current_frame_number, 1))
+            denorm_features = features * std_matrix + mean_matrix
+        return denorm_features
+
+    def load_mean_std_values(self, mean_file, std_file):
+        """Load pre-computed mean and variance vectors.
+
+        Args:
+            acoustic_norm_file: A pickle file.
+
+        Returns:
+            The mean and std vectors.
+        """
+        self.mean_vector = np.load(mean_file)
+        self.std_vector = np.load(std_file)
+
+
 class PPGMelLoader(torch.utils.data.Dataset):
     """Loads [ppg, mel] pairs."""
 
@@ -299,12 +377,13 @@ class Speaker:
 
 
 class MultispeakerDatasetDvec(torch.utils.data.Dataset):
-    def __init__(self, feature_dir, dvec_dir, partition=None, speaker_avg=False, augment=False):
+    def __init__(self, feature_dir, dvec_dir, partition=None, speaker_avg=False, augment=False, normalize=False):
         self.feature_dir = Path(feature_dir)
         self.dvec_path = Path(dvec_dir)
         self.partition = partition
         self.speaker_avg = speaker_avg
         self.augment = augment
+        self.normalize = normalize
 
         speaker_dirs = [f for f in self.feature_dir.glob("mel/*") if f.is_dir()]
         if len(speaker_dirs) == 0:
@@ -320,11 +399,14 @@ class MultispeakerDatasetDvec(torch.utils.data.Dataset):
             item = (source[0].joinpath(source[1]), self.feature_dir.joinpath('ppg', source[2], source[1]), source[1], source[2])
             self.features.append(item)
         self.transform = dynamic_range_compression
+        self.normalizer = MeanVarianceNorm(self.feature_dir.joinpath('logmean.npy'), self.feature_dir.joinpath('logstd.npy'))
 
     def __getitem__(self, index):
         mel_path, ppg_path, file_name, speaker_id = self.features[index]
         mel = torch.from_numpy(np.load(mel_path))
         mel = self.transform(mel)
+        if self.normalize:
+            mel = self.normalizer.feature_normalization(mel)
 
         ppg = torch.from_numpy(np.load(ppg_path))
 

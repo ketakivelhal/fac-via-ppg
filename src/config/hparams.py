@@ -56,7 +56,7 @@ def create_hparams(**kwargs):
         "dist_url": "tcp://localhost:54321",
         "cudnn_enabled": True,
         "cudnn_benchmark": False,
-        "output_directory": '/home/charles/AutoSpeech/speaker/fac-via-ppg/output',  # Directory to save checkpoints.
+        "output_directory": '/home/charles/AutoSpeech/speaker/fac-via-ppg/log',  # Directory to save checkpoints.
         # Directory to save tensorboard logs. Just keep it like this.
         "log_directory": 'log',
         "checkpoint_path": '',  # Path to a checkpoint file.
@@ -74,6 +74,7 @@ def create_hparams(**kwargs):
         "speaker_avg": True,
         "train_partition": 'train',
         "val_partition": 'val',
+        "normalize": True,
 
 
         # Passed as a txt file, see data/filelists/training-set.txt for an
@@ -152,7 +153,7 @@ def create_hparams(**kwargs):
         "learning_rate": 1e-5,
         "weight_decay": 1e-6,
         "grad_clip_thresh": 1.0,
-        "batch_size": 24,
+        "batch_size": 48,
         "mask_padding": True,  # set model's padded outputs to padded values
         "mel_weight": 1,
         "gate_weight": 0.005

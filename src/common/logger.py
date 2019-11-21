@@ -36,22 +36,34 @@ from tensorboardX import SummaryWriter
 from common.plotting_utils import plot_alignment_to_numpy, \
     plot_spectrogram_to_numpy
 from common.plotting_utils import plot_gate_outputs_to_numpy
-import logging
+# import logging
 from pathlib import Path
+from common.data_utils import MeanVarianceNorm
 import time
+import os
 
+def create_logger(log_dir, phase='train'):
+    log_file = '{}.log'.format(phase)
+    final_log_file = os.path.join(log_dir, log_file)
+    head = '%(asctime)-15s %(message)s'
+    import logging
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+    logging.basicConfig(filename=str(final_log_file),
+                        format=head)
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+    console = logging.StreamHandler()
+    logging.getLogger('').addHandler(console)
+    return logger
 
 class Tacotron2Logger(SummaryWriter):
-    def __init__(self, logdir: Path):
-        super(Tacotron2Logger, self).__init__()
-        final_log_file = Path(logdir).joinpath('log')
-        head = '%(asctime)-15s %(message)s'
-        logging.basicConfig(filename=str(final_log_file),
-                            format=head)
-        self.logger = logging.getLogger()
-        self.logger.setLevel(logging.INFO)
-        console = logging.StreamHandler()
-        logging.getLogger('').addHandler(console)
+    def __init__(self, logdir, hparams):
+        super(Tacotron2Logger, self).__init__(logdir)
+        self.normalize = hparams.normalize
+        if self.normalize:
+            self.normalizer = MeanVarianceNorm(
+                Path(hparams.feature_dir).joinpath('logmean.npy'), Path(hparams.feature_dir).joinpath('logstd.npy'))
 
     def log_training(self, reduced_loss, grad_norm, learning_rate, duration,
                      iteration):
@@ -81,14 +93,25 @@ class Tacotron2Logger(SummaryWriter):
             "mel_target",
             plot_spectrogram_to_numpy(mel_targets[idx].data.cpu().numpy()),
             iteration)
-        self.add_image(
-            "mel_predicted",
-            plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
-            iteration)
-        self.add_image(
-            "mel_predicted_before_postnet",
-            plot_spectrogram_to_numpy(
-                mel_outputs_before_postnet[idx].data.cpu().numpy()), iteration)
+        if self.normalize == True:
+            self.add_image(
+                "mel_predicted",
+                plot_spectrogram_to_numpy(self.normalizer.feature_denormalization(mel_outputs[idx]).data.cpu().numpy()),
+                iteration)
+            self.add_image(
+                "mel_predicted_before_postnet",
+                plot_spectrogram_to_numpy(
+                    self.normalizer.feature_denormalization(mel_outputs_before_postnet[idx]).data.cpu().numpy()),
+                iteration)
+        else:
+            self.add_image(
+                "mel_predicted",
+                plot_spectrogram_to_numpy(mel_outputs[idx].data.cpu().numpy()),
+                iteration)
+            self.add_image(
+                "mel_predicted_before_postnet",
+                plot_spectrogram_to_numpy(
+                    mel_outputs_before_postnet[idx].data.cpu().numpy()), iteration)
         self.add_image(
             "gate",
             plot_gate_outputs_to_numpy(

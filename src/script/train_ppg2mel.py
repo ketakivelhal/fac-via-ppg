@@ -43,7 +43,7 @@ from common.fp16_optimizer import FP16_Optimizer
 from common.model import Tacotron2
 from common.data_utils import PPGMelLoader, MultispeakerDatasetDvec, ppg_acoustics_collate
 from common.loss_function import Tacotron2Loss
-from common.logger import Tacotron2Logger
+from common.logger import Tacotron2Logger, create_logger
 from config.hparams import create_hparams
 from pprint import pprint
 from common.utils import AverageMeter, ProgressMeter
@@ -83,11 +83,13 @@ def init_distributed(hparams, n_gpus, rank, group_name):
 def prepare_dataloaders(hparams):
     # Get data, data loaders and collate function ready
     # trainset = PPGMelLoader(hparams.training_files, hparams)
-    trainset = MultispeakerDatasetDvec(hparams.feature_dir, hparams.d_vec_path, hparams.train_partition, hparams.speaker_avg)
+    trainset = MultispeakerDatasetDvec(hparams.feature_dir, hparams.d_vec_path, hparams.train_partition,
+                                       hparams.speaker_avg, normalize=hparams.normalize)
     hparams.load_feats_from_disk = False
     hparams.is_cache_feats = False
     hparams.feats_cache_path = ''
-    valset = MultispeakerDatasetDvec(hparams.feature_dir, hparams.d_vec_path, hparams.val_partition, hparams.speaker_avg)
+    valset = MultispeakerDatasetDvec(hparams.feature_dir, hparams.d_vec_path, hparams.val_partition,
+                                     hparams.speaker_avg, normalize=hparams.normalize)
     # valset = PPGMelLoader(hparams.validation_files, hparams)
 
     collate_fn = ppg_acoustics_collate
@@ -102,15 +104,16 @@ def prepare_dataloaders(hparams):
     return train_loader, valset, collate_fn
 
 
-def prepare_directories_and_logger(output_directory, log_directory, rank):
+def prepare_directories_and_logger(output_directory, log_directory, rank, hparams):
     if rank == 0:
         if not os.path.isdir(output_directory):
             os.makedirs(output_directory)
             os.chmod(output_directory, 0o775)
-        logger = Tacotron2Logger(os.path.join(output_directory, log_directory))
+        logger = Tacotron2Logger(os.path.join(output_directory, log_directory), hparams)
+        text_logger = create_logger(os.path.join(output_directory, log_directory))
     else:
         logger = None
-    return logger
+    return logger, text_logger
 
 
 def load_model(hparams):
@@ -153,7 +156,7 @@ def save_checkpoint(model, optimizer, learning_rate, iteration, filepath):
 
 
 def validate(model, criterion, valset, iteration, batch_size, n_gpus,
-             collate_fn, logger, distributed_run, rank):
+             collate_fn, logger, text_logger, distributed_run, rank):
     """Handles all the validation scoring and printing"""
     model.eval()
     with torch.no_grad():
@@ -166,7 +169,7 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
         grad_norms = AverageMeter('GradNorm', ':.4e')
         progress = ProgressMeter(
             len(val_loader), losses, grad_norms, prefix="Test: ",
-            logger=logger.logger)
+            logger=text_logger)
 
         for i, batch in enumerate(val_loader):
             x, y = model.parse_batch(batch)
@@ -214,8 +217,10 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
     criterion = Tacotron2Loss(hparams.mel_weight, hparams.gate_weight)
 
-    logger = prepare_directories_and_logger(
-        output_directory, log_directory, rank)
+    logger, text_logger = prepare_directories_and_logger(
+        output_directory, log_directory, rank, hparams)
+
+    text_logger.info(hparams.__dict__)
 
     train_loader, valset, collate_fn = prepare_dataloaders(hparams)
 
@@ -243,12 +248,11 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
         grad_norms = AverageMeter('GradNorm', ':.4e')
         progress = ProgressMeter(
             len(train_loader), batch_time, data_time, losses, grad_norms, prefix="Epoch: [{}]".format(epoch),
-            logger=logger.logger)
+            logger=text_logger)
 
         end = time.time()
 
         for i, batch in enumerate(train_loader):
-            start = time.perf_counter()
             for param_group in optimizer.param_groups:
                 param_group['lr'] = learning_rate
 
@@ -287,7 +291,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
                 reduced_loss, grad_norm, learning_rate, batch_time.val,
                 iteration)
 
-            if (iteration % hparams.display_freq == 0) and rank == 0:
+            if (i % hparams.display_freq == 0) and rank == 0:
                 progress.print(i)
 
 
@@ -295,7 +299,7 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
 
         if epoch % hparams.epochs_per_checkpoint == 0:
             validate(model, criterion, valset, iteration,
-                     hparams.batch_size, n_gpus, collate_fn, logger,
+                     hparams.batch_size, n_gpus, collate_fn, logger, text_logger,
                      hparams.distributed_run, rank)
             if rank == 0:
                 checkpoint_path = os.path.join(
@@ -316,7 +320,7 @@ if __name__ == '__main__':
             os.makedirs(output_directory)
 
     # Record the hyper-parameters.
-    hparams_snapshot_file = os.path.join(hparams.output_directory,
+    hparams_snapshot_file = os.path.join(output_directory,
                                          'hparams.txt')
     with open(hparams_snapshot_file, 'w') as writer:
         pprint(hparams.__dict__, writer)
