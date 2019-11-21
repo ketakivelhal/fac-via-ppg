@@ -172,8 +172,6 @@ def validate(model, criterion, valset, iteration, batch_size, n_gpus,
             logger=text_logger)
 
         for i, batch in enumerate(val_loader):
-            if i > 0:
-                break
             x, y = model.parse_batch(batch)
             y_pred = model(x)
             loss = criterion(y_pred, y)
@@ -255,8 +253,6 @@ def train(output_directory, log_directory, checkpoint_path, warm_start, n_gpus,
         end = time.time()
 
         for i, batch in enumerate(train_loader):
-            if i > 0:
-                break
             for param_group in optimizer.param_groups:
                 param_group['lr'] = learning_rate
 
