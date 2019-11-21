@@ -96,12 +96,12 @@ class Tacotron2Logger(SummaryWriter):
         if self.normalize == True:
             self.add_image(
                 "mel_predicted",
-                plot_spectrogram_to_numpy(self.normalizer.feature_denormalization(mel_outputs[idx]).data.cpu().numpy()),
+                plot_spectrogram_to_numpy(self.normalizer.feature_denormalization(mel_outputs[idx].permute(1, 0).data.cpu().numpy()).transpose()),
                 iteration)
             self.add_image(
                 "mel_predicted_before_postnet",
                 plot_spectrogram_to_numpy(
-                    self.normalizer.feature_denormalization(mel_outputs_before_postnet[idx]).data.cpu().numpy()),
+                    self.normalizer.feature_denormalization(mel_outputs_before_postnet[idx].permute(1, 0).data.cpu().numpy()).transpose()),
                 iteration)
         else:
             self.add_image(
